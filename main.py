@@ -9,7 +9,7 @@ import os
 from discord.ext import commands, tasks
 
 # Configure Gemini AI
-genai.configure(api_key="GEMINI_API_KEY")
+genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 # Bot setup with enhanced intents
@@ -732,4 +732,4 @@ async def on_command_error(ctx, error):
 
 # Run the bot
 if __name__ == "__main__":
-    bot.run('DISCORD_BOT_TOKEN')
+    bot.run(os.getenv('DISCORD_TOKEN'))
