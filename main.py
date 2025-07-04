@@ -1,3 +1,15 @@
+import subprocess
+import sys
+import os
+
+# Install packages if missing
+packages = ['discord.py>=2.3.0', 'google-generativeai>=0.3.0', 'aiohttp>=3.8.0']
+for package in packages:
+    try:
+        __import__(package.split('>=')[0].replace('-', '_'))
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
 import discord
 import google.generativeai as genai
 import asyncio
@@ -5,7 +17,7 @@ import random
 import json
 import datetime
 import re
-import os
+
 from discord.ext import commands, tasks
 
 # Configure Gemini AI
