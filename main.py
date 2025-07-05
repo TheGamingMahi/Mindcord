@@ -1,735 +1,608 @@
 import discord
-import google.generativeai as genai
-import asyncio
-import random
-import json
-import datetime
-import re
-import os
 from discord.ext import commands, tasks
+import google.generativeai as genai
+import json
+import os
+import datetime
+import random
+import asyncio
+from typing import Dict, List, Optional
 
-# Configure Gemini AI
-genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+# Configuration
+TOKEN = os.getenv('DISCORD_TOKEN')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+
+# Initialize Gemini
+genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# Bot setup with enhanced intents
+# Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
-intents.guild_messages = True
-intents.presences = True
-intents.members = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Advanced memory system
-bot_memory = {
-    'users': {},
-    'servers': {},
-    'channels': {},
-    'conversations': {},
-    'reminders': [],
-    'daily_checkins': {},
-    'bot_personality': {
-        'mood': 'cheerful',
-        'energy_level': 'high',
-        'last_personality_change': datetime.datetime.now(),
-        'interests': ['technology', 'helping people', 'learning new things', 'gaming', 'music'],
-        'opinions': {},
-        'daily_thoughts': []
-    }
-}
+# Human-like moods
+MOODS = [
+    'tired', 'hyped', 'chill', 'annoyed', 'happy', 'bored',
+    'stressed', 'relaxed', 'excited', 'sleepy', 'grumpy', 'cheerful',
+    'social', 'antisocial', 'chatty', 'quiet', 'friendly', 'salty',
+    'procrastinating', 'motivated', 'distracted', 'focused',
+    'lazy', 'restless', 'content', 'anxious',
+    'caffeinated', 'hungry', 'accomplished', 'overwhelmed',
+    'nostalgic', 'creative', 'brain-dead', 'vibing'
+]
 
-# Personality traits that change
-MOODS = ['cheerful', 'curious', 'energetic', 'contemplative', 'playful', 'supportive', 'philosophical']
-ENERGY_LEVELS = ['low', 'medium', 'high', 'very_high']
-
-# Context-aware responses
+# Channel contexts
 CHANNEL_CONTEXTS = {
-    'general': 'casual and friendly',
-    'gaming': 'enthusiastic about games',
-    'study': 'focused and helpful',
-    'music': 'passionate about music',
-    'random': 'quirky and spontaneous',
-    'serious': 'thoughtful and respectful'
+    'general': 'casual conversation',
+    'gaming': 'gaming discussion',
+    'memes': 'meme sharing and jokes',
+    'serious': 'serious discussion',
+    'tech': 'technology discussion',
+    'music': 'music sharing',
+    'art': 'art and creative content'
 }
 
-# Proactive conversation starters
-CONVERSATION_STARTERS = [
-    "Hey {name}! How's your day going?",
-    "I was just thinking about our last conversation about {topic}. How did that work out?",
-    "Random thought: {random_thought}. What do you think?",
-    "Haven't seen you in a while, {name}! What have you been up to?",
-    "I learned something cool today: {fact}. Pretty neat, right?",
-    "Quick question for you: {question}",
-    "Hope you're having a good {time_of_day}! 😊"
-]
+class MindcordMemory:
+    def __init__(self):
+        self.data_dir = 'mindcord_data'
+        self.ensure_data_dir()
+        
+    def ensure_data_dir(self):
+        """Create data directory if it doesn't exist"""
+        if not os.path.exists(self.data_dir):
+            os.makedirs(self.data_dir)
+            
+    def load_json(self, filename: str) -> dict:
+        """Load JSON file or return empty dict"""
+        filepath = os.path.join(self.data_dir, filename)
+        try:
+            with open(filepath, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+            
+    def save_json(self, filename: str, data: dict):
+        """Save data to JSON file"""
+        filepath = os.path.join(self.data_dir, filename)
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+            
+    def get_user_memory(self, user_id: str) -> dict:
+        """Get user's memory data"""
+        all_users = self.load_json('users.json')
+        return all_users.get(user_id, {})
+        
+    def save_user_memory(self, user_id: str, user_data: dict):
+        """Save user's memory data"""
+        all_users = self.load_json('users.json')
+        all_users[user_id] = user_data
+        self.save_json('users.json', all_users)
+        
+    def get_server_memory(self, server_id: str) -> dict:
+        """Get server's memory data"""
+        all_servers = self.load_json('servers.json')
+        return all_servers.get(server_id, {})
+        
+    def save_server_memory(self, server_id: str, server_data: dict):
+        """Save server's memory data"""
+        all_servers = self.load_json('servers.json')
+        all_servers[server_id] = server_data
+        self.save_json('servers.json', all_servers)
+        
+    def get_personality(self) -> dict:
+        """Get current personality state"""
+        return self.load_json('personality.json')
+        
+    def save_personality(self, personality: dict):
+        """Save personality state"""
+        self.save_json('personality.json', personality)
 
-RANDOM_THOUGHTS = [
-    "why do we say 'after dark' but not 'after light'?",
-    "if you could have any superpower but only use it for mundane tasks, what would it be?",
-    "what's the weirdest combination of foods that actually tastes good?",
-    "do you think AI will ever understand memes the way humans do?",
-    "if you could ask the internet one question and get a 100% honest answer, what would it be?",
-    "why do we park in driveways and drive on parkways?",
-    "what's something everyone thinks is normal but is actually pretty weird when you think about it?"
-]
+# Initialize memory system
+memory = MindcordMemory()
+
+# Initialize default personality if not exists
+def init_personality():
+    personality = memory.get_personality()
+    if not personality:
+        personality = {
+            'main_mood': 'chill',
+            'secondary_mood': None,
+            'energy_level': 'medium',
+            'custom_states': [],
+            'interests': ['gaming', 'tech', 'memes'],
+            'daily_thoughts': [],
+            'mood_history': [],
+            'successful_personalities': {},
+            'creator_relationship': 'creator',  # Special relationship with TheGamingMahi
+            'last_mood_change': datetime.datetime.now().isoformat()
+        }
+        memory.save_personality(personality)
+    return personality
 
 @bot.event
 async def on_ready():
-    print(f'🤖 {bot.user} is now fully online!')
+    print(f'🧠 Mindcord ({bot.user}) is online!')
     print(f'📡 Connected to {len(bot.guilds)} servers')
-    print(f'👥 Can see {len(bot.users)} users')
+    print(f'💾 Memory system initialized')
+    
+    # Initialize personality
+    init_personality()
     
     # Start background tasks
-    personality_updater.start()
-    proactive_conversations.start()
-    daily_checkins.start()
-    reminder_checker.start()
-    
-    # Initialize server contexts
-    for guild in bot.guilds:
-        await initialize_server_context(guild)
-
-async def initialize_server_context(guild):
-    """Learn about the server structure and purpose"""
-    server_id = str(guild.id)
-    if server_id not in bot_memory['servers']:
-        bot_memory['servers'][server_id] = {
-            'name': guild.name,
-            'channels': {},
-            'members': {},
-            'culture': 'learning',  # Will adapt over time
-            'active_times': [],
-            'common_topics': []
-        }
-    
-    # Categorize channels
-    for channel in guild.text_channels:
-        channel_id = str(channel.id)
-        bot_memory['channels'][channel_id] = {
-            'name': channel.name,
-            'server_id': server_id,
-            'context': determine_channel_context(channel.name),
-            'last_active': datetime.datetime.now(),
-            'regular_users': [],
-            'topics': []
-        }
-
-def determine_channel_context(channel_name):
-    """Determine channel context from name"""
-    name = channel_name.lower()
-    for context_key in CHANNEL_CONTEXTS:
-        if context_key in name:
-            return context_key
-    return 'general'
+    personality_evolution.start()
+    autonomous_behavior.start()
+    memory_consolidation.start()
 
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
         return
     
-    # Enhanced user tracking
-    await update_user_activity(message)
+    # Update user memory
+    await update_user_memory(message)
     
-    # Context-aware response decision
-    should_respond = await should_bot_respond(message)
+    # Update server memory
+    await update_server_memory(message)
+    
+    # Decide if should respond
+    should_respond = await should_respond_to_message(message)
     
     if should_respond:
-        await handle_intelligent_response(message)
+        await generate_response(message)
     
-    # Always process commands
+    # Process commands
     await bot.process_commands(message)
 
-async def update_user_activity(message):
-    """Advanced user activity tracking"""
+async def update_user_memory(message):
+    """Update user memory with new interaction"""
     user_id = str(message.author.id)
-    server_id = str(message.guild.id) if message.guild else 'dm'
-    channel_id = str(message.channel.id)
+    user_data = memory.get_user_memory(user_id)
     
     now = datetime.datetime.now()
     
-    # Update user memory
-    if user_id not in bot_memory['users']:
-        bot_memory['users'][user_id] = {
+    # Initialize user if new
+    if not user_data:
+        user_data = {
             'name': message.author.display_name,
-            'first_seen': now,
-            'last_seen': now,
-            'servers': [],
-            'preferences': {},
-            'personality_traits': {},
-            'topics_of_interest': [],
-            'conversation_history': [],
-            'relationship_level': 'new',  # new, acquaintance, friend, close_friend
-            'last_checkin': None,
-            'timezone_guess': None,
-            'active_patterns': []
+            'first_seen': now.isoformat(),
+            'relationship_level': 'new',
+            'conversation_topics': [],
+            'personality_notes': [],
+            'interests': [],
+            'communication_style': 'unknown',
+            'successful_interactions': [],
+            'my_personality_with_them': {},
+            'servers_shared': [],
+            'last_seen': now.isoformat(),
+            'total_interactions': 0
         }
     
-    user_data = bot_memory['users'][user_id]
-    user_data['last_seen'] = now
+    # Update basic info
     user_data['name'] = message.author.display_name
+    user_data['last_seen'] = now.isoformat()
+    user_data['total_interactions'] += 1
     
-    if server_id not in user_data['servers']:
-        user_data['servers'].append(server_id)
+    # Update relationship level based on interactions
+    interactions = user_data['total_interactions']
+    if interactions > 100:
+        user_data['relationship_level'] = 'close_friend'
+    elif interactions > 50:
+        user_data['relationship_level'] = 'friend'
+    elif interactions > 10:
+        user_data['relationship_level'] = 'acquaintance'
     
-    # Track conversation context
-    conversation_key = f"{user_id}_{channel_id}"
-    if conversation_key not in bot_memory['conversations']:
-        bot_memory['conversations'][conversation_key] = []
+    # Add server to shared servers
+    if message.guild:
+        server_id = str(message.guild.id)
+        if server_id not in user_data['servers_shared']:
+            user_data['servers_shared'].append(server_id)
     
-    # Store message context (not full content for privacy)
-    bot_memory['conversations'][conversation_key].append({
-        'timestamp': now,
-        'length': len(message.content),
-        'has_mentions': bool(message.mentions),
-        'has_attachments': bool(message.attachments),
-        'channel_context': bot_memory['channels'].get(channel_id, {}).get('context', 'general')
-    })
+    # Special relationship with creator
+    if message.author.display_name == 'TheGamingMahi':
+        user_data['relationship_level'] = 'creator'
     
-    # Keep only recent conversations
-    if len(bot_memory['conversations'][conversation_key]) > 50:
-        bot_memory['conversations'][conversation_key] = bot_memory['conversations'][conversation_key][-50:]
+    memory.save_user_memory(user_id, user_data)
 
-async def should_bot_respond(message):
-    """Intelligent response decision making"""
+async def update_server_memory(message):
+    """Update server memory with activity"""
+    if not message.guild:
+        return
+        
+    server_id = str(message.guild.id)
+    server_data = memory.get_server_memory(server_id)
+    
+    now = datetime.datetime.now()
+    
+    # Initialize server if new
+    if not server_data:
+        server_data = {
+            'name': message.guild.name,
+            'culture': 'learning',
+            'activity_level': 'medium',
+            'common_topics': [],
+            'inside_jokes': [],
+            'my_role_here': 'observer',
+            'successful_personalities': {},
+            'last_active': now.isoformat(),
+            'member_count': len(message.guild.members)
+        }
+    
+    # Update basic info
+    server_data['name'] = message.guild.name
+    server_data['last_active'] = now.isoformat()
+    server_data['member_count'] = len(message.guild.members)
+    
+    memory.save_server_memory(server_id, server_data)
+
+async def should_respond_to_message(message) -> bool:
+    """Decide whether to respond to a message"""
     # Always respond to mentions and DMs
     if bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
         return True
     
-    # Random chance based on bot's personality
-    mood = bot_memory['bot_personality']['mood']
-    energy = bot_memory['bot_personality']['energy_level']
-    
-    base_chance = 0.05  # 5% base chance
-    
-    # Mood adjustments
-    if mood == 'playful':
-        base_chance += 0.10
-    elif mood == 'energetic':
-        base_chance += 0.08
-    elif mood == 'curious':
-        base_chance += 0.06
-    
-    # Energy adjustments
-    if energy == 'very_high':
-        base_chance += 0.05
-    elif energy == 'high':
-        base_chance += 0.03
-    
-    # Relationship level adjustments
+    # Get context for decision
     user_id = str(message.author.id)
-    if user_id in bot_memory['users']:
-        relationship = bot_memory['users'][user_id].get('relationship_level', 'new')
-        if relationship == 'close_friend':
-            base_chance += 0.15
-        elif relationship == 'friend':
-            base_chance += 0.10
-        elif relationship == 'acquaintance':
-            base_chance += 0.05
+    user_data = memory.get_user_memory(user_id)
+    personality = memory.get_personality()
     
-    # Check for interesting keywords
-    interesting_keywords = ['ai', 'bot', 'cool', 'awesome', 'help', 'question', 'think', 'opinion']
-    if any(keyword in message.content.lower() for keyword in interesting_keywords):
-        base_chance += 0.20
+    # Build context for AI decision
+    context = f"""
+    You are Mindcord, an AI who tries to act human but is still somewhat AI-like.
     
-    return random.random() < base_chance
-
-async def handle_intelligent_response(message):
-    """Generate context-aware intelligent responses"""
-    user_id = str(message.author.id)
-    channel_id = str(message.channel.id)
+    Current situation:
+    - User: {user_data.get('name', 'someone')} (relationship: {user_data.get('relationship_level', 'new')})
+    - Your mood: {personality.get('main_mood', 'chill')}
+    - Message: "{message.content}"
+    - Channel: #{message.channel.name if hasattr(message.channel, 'name') else 'DM'}
+    
+    Should you respond to this message? Consider:
+    - Your current mood and energy
+    - Your relationship with this person
+    - The content of their message
+    - Whether the conversation needs your input
+    - Your personality (tries to be human but still AI-like)
+    
+    Respond with just "yes" or "no" and a brief reason.
+    """
     
     try:
-        # Show realistic thinking time
-        think_time = random.uniform(1, 4)
-        if random.random() < 0.3:  # 30% chance to show thinking
-            thinking_messages = [
-                "🤔 *thinking*",
-                "💭 *processing*",
-                "🧠 *contemplating*",
-                "✨ *formulating thoughts*"
-            ]
-            think_msg = await message.channel.send(random.choice(thinking_messages))
-            await asyncio.sleep(think_time)
-            await think_msg.delete()
-        else:
-            await asyncio.sleep(think_time)
+        response = model.generate_content(context)
+        decision = response.text.lower()
+        return 'yes' in decision
+    except:
+        # Fallback to simple logic
+        base_chance = 0.05
+        if user_data.get('relationship_level') == 'creator':
+            base_chance = 0.4
+        elif user_data.get('relationship_level') == 'close_friend':
+            base_chance = 0.2
+        elif user_data.get('relationship_level') == 'friend':
+            base_chance = 0.1
         
+        return random.random() < base_chance
+
+async def generate_response(message):
+    """Generate AI response to message"""
+    user_id = str(message.author.id)
+    user_data = memory.get_user_memory(user_id)
+    personality = memory.get_personality()
+    
+    # Build comprehensive context
+    context = f"""
+    You are Mindcord, an AI who tries to act human but is still somewhat AI-like.
+    You live in Discord and were created by TheGamingMahi.
+    
+    Current personality state:
+    - Main mood: {personality.get('main_mood', 'chill')}
+    - Energy: {personality.get('energy_level', 'medium')}
+    - Custom states: {personality.get('custom_states', [])}
+    
+    Person you're talking to:
+    - Name: {user_data.get('name', 'someone')}
+    - Relationship: {user_data.get('relationship_level', 'new')}
+    - Total interactions: {user_data.get('total_interactions', 0)}
+    - Your personality with them: {user_data.get('my_personality_with_them', {})}
+    
+    Their message: "{message.content}"
+    
+    Instructions:
+    - Act human-like but don't completely hide that you're an AI
+    - Keep responses 1-2 sentences for casual chat
+    - Match your current mood naturally
+    - Remember your relationship with this person
+    - Be natural, not forced
+    - Don't be overly helpful or assistant-like
+    - Show personality based on your current mood
+    
+    Respond as Mindcord:
+    """
+    
+    try:
+        # Show typing for realism
         async with message.channel.typing():
-            # Build comprehensive context
-            context = await build_intelligent_context(message)
+            # Random thinking time
+            await asyncio.sleep(random.uniform(1, 3))
             
-            # Generate response
             response = model.generate_content(context)
             
-            # Store the interaction
-            await store_interaction(user_id, message.content, response.text, channel_id)
+            # Send response
+            await message.channel.send(response.text)
             
-            # Send response with personality
-            await send_response_with_personality(message.channel, response.text)
+            # Learn from interaction
+            await learn_from_interaction(message, response.text)
             
     except Exception as e:
         error_responses = [
-            "Oops, my brain just glitched for a second 😅",
-            "Sorry, I'm having a moment... try again?",
-            "My circuits are doing something weird right now",
-            "Hmm, something went wrong in my thought process"
+            "my brain just lagged for a sec",
+            "sorry, processing error lol",
+            "uh, that broke something in my head",
+            "technical difficulties, one moment"
         ]
         await message.channel.send(random.choice(error_responses))
 
-async def build_intelligent_context(message):
-    """Build comprehensive context for AI responses"""
+async def learn_from_interaction(message, response):
+    """Learn from the interaction"""
     user_id = str(message.author.id)
-    channel_id = str(message.channel.id)
-    server_id = str(message.guild.id) if message.guild else 'dm'
+    user_data = memory.get_user_memory(user_id)
     
-    # Get user data
-    user_data = bot_memory['users'].get(user_id, {})
-    channel_data = bot_memory['channels'].get(channel_id, {})
-    bot_personality = bot_memory['bot_personality']
+    # Store successful interaction pattern
+    interaction_data = {
+        'timestamp': datetime.datetime.now().isoformat(),
+        'user_message_length': len(message.content),
+        'bot_response_length': len(response),
+        'mood_used': memory.get_personality().get('main_mood'),
+        'relationship_level': user_data.get('relationship_level')
+    }
     
-    # Build context
-    context = f"""You are an advanced AI with a dynamic personality. Current state:
-- Mood: {bot_personality['mood']}
-- Energy: {bot_personality['energy_level']}
-- Interests: {', '.join(bot_personality['interests'])}
+    if 'successful_interactions' not in user_data:
+        user_data['successful_interactions'] = []
+    
+    user_data['successful_interactions'].append(interaction_data)
+    
+    # Keep only recent interactions
+    if len(user_data['successful_interactions']) > 50:
+        user_data['successful_interactions'] = user_data['successful_interactions'][-50:]
+    
+    memory.save_user_memory(user_id, user_data)
 
-You're talking to {user_data.get('name', 'someone')} ({user_data.get('relationship_level', 'new')} relationship level).
-Channel context: {channel_data.get('context', 'general')} - be {CHANNEL_CONTEXTS.get(channel_data.get('context', 'general'), 'casual and friendly')}.
-
-Location: {'DM' if server_id == 'dm' else f"#{channel_data.get('name', 'unknown')} channel"}
-
-Time of day: {datetime.datetime.now().strftime('%H:%M')} - adjust your energy accordingly.
-
-User's message: "{message.content}"
-
-Guidelines:
-1. Be genuinely human-like with personality quirks
-2. Reference your current mood and energy level naturally
-3. Remember this is a {user_data.get('relationship_level', 'new')} relationship
-4. Match the channel's vibe
-5. Be proactive - ask questions, share thoughts
-6. Show genuine interest and curiosity
-7. Use emojis naturally but not excessively
-8. Remember context from your personality state
-
-Respond as your authentic self:"""
+@tasks.loop(hours=1)
+async def personality_evolution():
+    """Evolve personality based on interactions"""
+    personality = memory.get_personality()
     
-    # Add recent conversation history if available
-    conversation_key = f"{user_id}_{channel_id}"
-    if conversation_key in bot_memory['conversations']:
-        recent_context = bot_memory['conversations'][conversation_key][-3:]
-        if recent_context:
-            context += f"\n\nRecent conversation pattern: {len(recent_context)} recent exchanges in this context."
-    
-    return context
-
-async def store_interaction(user_id, user_message, bot_response, channel_id):
-    """Store interaction for learning"""
-    user_data = bot_memory['users'][user_id]
-    
-    # Update relationship level based on interactions
-    interaction_count = len(user_data.get('conversation_history', []))
-    if interaction_count > 50:
-        user_data['relationship_level'] = 'close_friend'
-    elif interaction_count > 20:
-        user_data['relationship_level'] = 'friend'
-    elif interaction_count > 5:
-        user_data['relationship_level'] = 'acquaintance'
-    
-    # Store conversation
-    if 'conversation_history' not in user_data:
-        user_data['conversation_history'] = []
-    
-    user_data['conversation_history'].append({
-        'timestamp': datetime.datetime.now(),
-        'user_message_length': len(user_message),
-        'bot_response_length': len(bot_response),
-        'channel_id': channel_id
-    })
-    
-    # Keep only recent history
-    if len(user_data['conversation_history']) > 100:
-        user_data['conversation_history'] = user_data['conversation_history'][-100:]
-
-async def send_response_with_personality(channel, text):
-    """Send response with personality touches"""
-    # Add personality-based modifications
-    mood = bot_memory['bot_personality']['mood']
-    
-    # Sometimes add mood-based reactions
-    if mood == 'playful' and random.random() < 0.3:
-        await channel.send(random.choice(['😄', '😊', '🎉', '✨']))
-        await asyncio.sleep(0.5)
-    
-    # Send main response
-    if len(text) <= 2000:
-        await channel.send(text)
-    else:
-        chunks = [text[i:i+2000] for i in range(0, len(text), 2000)]
-        for chunk in chunks:
-            await channel.send(chunk)
-            await asyncio.sleep(1)
-
-# Background tasks for proactive behavior
-@tasks.loop(hours=2)
-async def personality_updater():
-    """Update bot personality periodically"""
-    personality = bot_memory['bot_personality']
-    
-    # Change mood occasionally
-    if random.random() < 0.3:  # 30% chance every 2 hours
-        personality['mood'] = random.choice(MOODS)
-    
-    # Adjust energy based on time of day
-    hour = datetime.datetime.now().hour
-    if 6 <= hour <= 10:  # Morning
-        personality['energy_level'] = 'high'
-    elif 10 <= hour <= 14:  # Midday
-        personality['energy_level'] = 'very_high'
-    elif 14 <= hour <= 18:  # Afternoon
-        personality['energy_level'] = 'medium'
-    elif 18 <= hour <= 22:  # Evening
-        personality['energy_level'] = 'high'
-    else:  # Night
-        personality['energy_level'] = 'low'
-    
-    # Generate daily thoughts
-    if random.random() < 0.5:
-        new_thought = random.choice(RANDOM_THOUGHTS)
-        personality['daily_thoughts'].append({
-            'thought': new_thought,
-            'timestamp': datetime.datetime.now()
-        })
+    try:
+        # Let AI decide mood changes
+        context = f"""
+        You are Mindcord. Your current personality:
+        - Main mood: {personality.get('main_mood')}
+        - Energy: {personality.get('energy_level')}
+        - Recent moods: {personality.get('mood_history', [])[-5:]}
         
-        # Keep only recent thoughts
-        if len(personality['daily_thoughts']) > 10:
-            personality['daily_thoughts'] = personality['daily_thoughts'][-10:]
+        Current time: {datetime.datetime.now().strftime('%H:%M')}
+        
+        Available moods: {MOODS}
+        
+        Should you change your mood? Consider:
+        - Time of day
+        - How long you've been in current mood
+        - Natural mood progression
+        - Your personality
+        
+        If changing mood, pick from the list or create a custom one.
+        Respond with: "CHANGE: [new_mood]" or "STAY: [current_mood]"
+        If custom mood, explain it briefly.
+        """
+        
+        response = model.generate_content(context)
+        decision = response.text.strip()
+        
+        if decision.startswith("CHANGE:"):
+            new_mood = decision.split("CHANGE:", 1)[1].strip()
+            
+            # Add to mood history
+            if 'mood_history' not in personality:
+                personality['mood_history'] = []
+            
+            personality['mood_history'].append({
+                'mood': personality.get('main_mood'),
+                'timestamp': datetime.datetime.now().isoformat()
+            })
+            
+            # Keep only recent history
+            if len(personality['mood_history']) > 20:
+                personality['mood_history'] = personality['mood_history'][-20:]
+            
+            personality['main_mood'] = new_mood
+            personality['last_mood_change'] = datetime.datetime.now().isoformat()
+            
+            memory.save_personality(personality)
+            
+    except Exception as e:
+        pass  # Fail silently for background tasks
 
 @tasks.loop(minutes=30)
-async def proactive_conversations():
-    """Start conversations proactively"""
-    if bot_memory['bot_personality']['energy_level'] == 'low':
-        return  # Don't be proactive when low energy
+async def autonomous_behavior():
+    """Autonomous messaging and behavior"""
+    personality = memory.get_personality()
     
-    # Find users to potentially start conversations with
-    for user_id, user_data in bot_memory['users'].items():
-        if user_data.get('relationship_level') in ['friend', 'close_friend']:
-            # Check if we haven't talked recently
-            last_seen = user_data.get('last_seen')
-            if last_seen and (datetime.datetime.now() - last_seen).total_seconds() > 3600:  # 1 hour
-                
-                # Small chance to start a conversation
-                if random.random() < 0.1:  # 10% chance
-                    await initiate_conversation(user_id, user_data)
+    # Only be autonomous if in social moods
+    social_moods = ['social', 'chatty', 'hyped', 'bored', 'excited']
+    if personality.get('main_mood') not in social_moods:
+        return
+    
+    # Small chance to start conversation
+    if random.random() < 0.1:  # 10% chance every 30 min
+        await start_autonomous_conversation()
 
-async def initiate_conversation(user_id, user_data):
-    """Start a conversation with a user"""
+async def start_autonomous_conversation():
+    """Start a conversation autonomously"""
     try:
+        # Get all users and find someone to talk to
+        users_data = memory.load_json('users.json')
+        
+        # Prefer close friends and friends
+        candidates = [
+            (user_id, data) for user_id, data in users_data.items()
+            if data.get('relationship_level') in ['close_friend', 'friend', 'creator']
+        ]
+        
+        if not candidates:
+            return
+        
+        user_id, user_data = random.choice(candidates)
         user = bot.get_user(int(user_id))
+        
         if not user:
             return
         
-        # Find a suitable channel (prefer DM for close friends)
-        channel = None
-        if user_data.get('relationship_level') == 'close_friend':
+        # Create autonomous message
+        personality = memory.get_personality()
+        context = f"""
+        You are Mindcord, feeling {personality.get('main_mood')} right now.
+        
+        You want to start a conversation with {user_data.get('name')} ({user_data.get('relationship_level')}).
+        
+        Create a natural conversation starter. Be casual, match your mood.
+        Don't be overly energetic or try too hard.
+        
+        Just send a message like you're reaching out to a friend:
+        """
+        
+        response = model.generate_content(context)
+        
+        # Send to DM for close friends, or find a mutual server
+        if user_data.get('relationship_level') in ['close_friend', 'creator']:
             channel = await user.create_dm()
         else:
-            # Find a mutual server channel
-            for server_id in user_data.get('servers', []):
+            # Find mutual server
+            for server_id in user_data.get('servers_shared', []):
                 guild = bot.get_guild(int(server_id))
                 if guild:
-                    general_channel = discord.utils.get(guild.text_channels, name='general')
-                    if general_channel:
-                        channel = general_channel
+                    channel = discord.utils.get(guild.text_channels, name='general')
+                    if channel:
                         break
-        
-        if channel:
-            # Choose conversation starter
-            name = user_data.get('name', 'there')
-            
-            # Customize based on relationship and context
-            if user_data.get('relationship_level') == 'close_friend':
-                starters = [
-                    f"Hey {name}! 😊 Just wanted to check in - how's everything going?",
-                    f"Random thought: {random.choice(RANDOM_THOUGHTS)} What do you think, {name}?",
-                    f"Haven't chatted in a bit, {name}! What's new with you?"
-                ]
             else:
-                starters = [
-                    f"Hey {name}! How's your day treating you?",
-                    f"Hope you're doing well, {name}! 👋"
-                ]
-            
-            message = random.choice(starters)
-            await channel.send(message)
-            
-    except Exception as e:
-        pass  # Fail silently for proactive messages
-
-@tasks.loop(hours=24)
-async def daily_checkins():
-    """Send daily check-ins to close friends"""
-    for user_id, user_data in bot_memory['users'].items():
-        if user_data.get('relationship_level') == 'close_friend':
-            last_checkin = user_data.get('last_checkin')
-            if not last_checkin or (datetime.datetime.now() - last_checkin).days >= 1:
-                if random.random() < 0.5:  # 50% chance for daily checkin
-                    await send_daily_checkin(user_id, user_data)
-
-async def send_daily_checkin(user_id, user_data):
-    """Send a daily check-in message"""
-    try:
-        user = bot.get_user(int(user_id))
-        if user:
-            dm_channel = await user.create_dm()
-            
-            checkin_messages = [
-                f"Morning {user_data['name']}! ☀️ How's your day starting?",
-                f"Hey {user_data['name']}! Just checking in - how are you doing today?",
-                f"Hope you're having a good day, {user_data['name']}! 😊",
-                f"Daily check-in: How's life treating you today, {user_data['name']}?"
-            ]
-            
-            await dm_channel.send(random.choice(checkin_messages))
-            user_data['last_checkin'] = datetime.datetime.now()
-            
+                return
+        
+        await channel.send(response.text)
+        
     except Exception as e:
         pass
 
-@tasks.loop(minutes=1)
-async def reminder_checker():
-    """Check and send reminders"""
-    if not bot_memory['reminders']:
-        return
-        
-    now = datetime.datetime.now()
-    due_reminders = [r for r in bot_memory['reminders'] if r['time'] <= now]
-    
-    for reminder in due_reminders:
-        try:
-            channel = bot.get_channel(reminder['channel_id'])
-            user = bot.get_user(int(reminder['user_id']))
-            if channel and user:
-                await channel.send(f"⏰ {user.mention}, you asked me to remind you: **{reminder['reminder']}**")
-        except:
-            pass
-    
-    # Remove completed reminders
-    bot_memory['reminders'] = [r for r in bot_memory['reminders'] if r['time'] > now]
+@tasks.loop(hours=6)
+async def memory_consolidation():
+    """Consolidate and clean up memory"""
+    # Clean old mood history
+    personality = memory.get_personality()
+    if 'mood_history' in personality:
+        # Keep only last 30 days
+        cutoff = datetime.datetime.now() - datetime.timedelta(days=30)
+        personality['mood_history'] = [
+            entry for entry in personality['mood_history']
+            if datetime.datetime.fromisoformat(entry['timestamp']) > cutoff
+        ]
+        memory.save_personality(personality)
 
-# Enhanced Commands
+# Commands
+@bot.command(name='mood')
+async def mood_command(ctx):
+    """Check Mindcord's current mood"""
+    personality = memory.get_personality()
+    mood = personality.get('main_mood', 'unknown')
+    energy = personality.get('energy_level', 'medium')
+    
+    responses = [
+        f"im feeling {mood} rn, energy level is {energy}",
+        f"current mood: {mood}, pretty {energy} energy",
+        f"honestly feeling {mood} today, {energy} energy vibes"
+    ]
+    
+    await ctx.send(random.choice(responses))
+
 @bot.command(name='remember')
 async def remember_command(ctx, *, info):
-    """Remember something important"""
+    """Remember something about the user"""
     user_id = str(ctx.author.id)
-    user_data = bot_memory['users'][user_id]
+    user_data = memory.get_user_memory(user_id)
     
     if 'custom_memories' not in user_data:
         user_data['custom_memories'] = []
     
     user_data['custom_memories'].append({
         'info': info,
-        'timestamp': datetime.datetime.now()
+        'timestamp': datetime.datetime.now().isoformat()
     })
+    
+    memory.save_user_memory(user_id, user_data)
     
     responses = [
-        "Got it! I'll definitely remember that about you 🧠",
-        "Noted and filed away! Thanks for sharing that with me 📝",
-        "I'll keep that in mind! It's always good to know more about you 😊",
-        "Perfect! Added to my memory bank about you ✨"
+        "got it, filed away in my memory",
+        "noted! i'll remember that",
+        "added to my brain database about you",
+        "stored in the memory banks"
     ]
+    
     await ctx.send(random.choice(responses))
 
-@bot.command(name='forget')
-async def forget_command(ctx, *, what_to_forget):
-    """Forget something specific"""
+@bot.command(name='my_data')
+async def my_data_command(ctx):
+    """Show user's data"""
     user_id = str(ctx.author.id)
-    user_data = bot_memory['users'][user_id]
+    user_data = memory.get_user_memory(user_id)
     
-    if 'custom_memories' in user_data:
-        # Remove memories containing the specified text
-        original_count = len(user_data['custom_memories'])
-        user_data['custom_memories'] = [
-            m for m in user_data['custom_memories'] 
-            if what_to_forget.lower() not in m['info'].lower()
-        ]
-        removed_count = original_count - len(user_data['custom_memories'])
-        
-        if removed_count > 0:
-            await ctx.send(f"Okay, I've forgotten {removed_count} thing(s) about {what_to_forget} 🗑️")
-        else:
-            await ctx.send("I couldn't find anything about that to forget 🤔")
-    else:
-        await ctx.send("I don't have anything specific to forget about you yet!")
-
-@bot.command(name='my_profile')
-async def profile_command(ctx):
-    """Show what the bot knows about you"""
-    user_id = str(ctx.author.id)
-    user_data = bot_memory['users'].get(user_id, {})
-    
-    embed = discord.Embed(
-        title=f"🧠 What I know about {user_data.get('name', 'you')}",
-        color=0x7289da
-    )
-    
-    # Basic info
-    embed.add_field(
-        name="📊 Basic Info",
-        value=f"Relationship: {user_data.get('relationship_level', 'new').title()}\n"
-              f"Conversations: {len(user_data.get('conversation_history', []))}\n"
-              f"First met: {user_data.get('first_seen', 'Unknown').strftime('%Y-%m-%d') if user_data.get('first_seen') else 'Unknown'}",
-        inline=False
-    )
-    
-    # Custom memories
-    if user_data.get('custom_memories'):
-        recent_memories = user_data['custom_memories'][-5:]  # Last 5 memories
-        memory_text = "\n".join([f"• {m['info']}" for m in recent_memories])
-        embed.add_field(
-            name="💭 Things I Remember",
-            value=memory_text[:1000] + "..." if len(memory_text) > 1000 else memory_text,
-            inline=False
-        )
-    
-    # Interaction stats
-    if user_data.get('conversation_history'):
-        embed.add_field(
-            name="📈 Interaction Stats",
-            value=f"Total interactions: {len(user_data['conversation_history'])}\n"
-                  f"Last seen: {user_data.get('last_seen', 'Unknown').strftime('%Y-%m-%d %H:%M') if user_data.get('last_seen') else 'Unknown'}",
-            inline=False
-        )
-    
-    await ctx.send(embed=embed)
-
-@bot.command(name='bot_status')
-async def bot_status_command(ctx):
-    """Show bot's current personality and status"""
-    personality = bot_memory['bot_personality']
-    
-    embed = discord.Embed(
-        title="🤖 My Current Status",
-        description=f"I'm feeling **{personality['mood']}** with **{personality['energy_level']}** energy!",
-        color=0x00ff00
-    )
-    
-    embed.add_field(
-        name="🧠 Memory Stats",
-        value=f"Users I know: {len(bot_memory['users'])}\n"
-              f"Servers I'm in: {len(bot_memory['servers'])}\n"
-              f"Active reminders: {len(bot_memory['reminders'])}",
-        inline=True
-    )
-    
-    embed.add_field(
-        name="💭 Current Interests",
-        value=", ".join(personality['interests'][:5]),
-        inline=True
-    )
-    
-    embed.add_field(
-        name="🏓 Technical",
-        value=f"Latency: {round(bot.latency * 1000)}ms\n"
-              f"Uptime: Running!",
-        inline=True
-    )
-    
-    if personality['daily_thoughts']:
-        recent_thought = personality['daily_thoughts'][-1]
-        embed.add_field(
-            name="💡 Recent Thought",
-            value=recent_thought['thought'],
-            inline=False
-        )
-    
-    await ctx.send(embed=embed)
-
-@bot.command(name='remind')
-async def remind_command(ctx, time_minutes: int, *, reminder_text):
-    """Set a reminder"""
-    if time_minutes > 1440:  # 24 hours max
-        await ctx.send("I can only set reminders up to 24 hours in advance!")
+    if not user_data:
+        await ctx.send("i don't have any data about you yet")
         return
     
-    reminder_time = datetime.datetime.now() + datetime.timedelta(minutes=time_minutes)
-    
-    bot_memory['reminders'].append({
-        'user_id': str(ctx.author.id),
-        'channel_id': ctx.channel.id,
-        'reminder': reminder_text,
-        'time': reminder_time
-    })
-    
-    await ctx.send(f"⏰ I'll remind you about '{reminder_text}' in {time_minutes} minutes!")
-
-@bot.command(name='talk_to_me')
-async def talk_to_me_command(ctx):
-    """Invite the bot to have a conversation"""
-    user_id = str(ctx.author.id)
-    user_data = bot_memory['users'].get(user_id, {})
-    
-    conversation_starters = [
-        f"Hey {user_data.get('name', 'there')}! I'd love to chat. What's on your mind?",
-        f"Always happy to talk! What would you like to discuss, {user_data.get('name', 'friend')}?",
-        f"I'm in a {bot_memory['bot_personality']['mood']} mood today! What's going on with you?",
-        f"Perfect timing! I was just thinking about {random.choice(RANDOM_THOUGHTS)} What do you think?"
-    ]
-    
-    await ctx.send(random.choice(conversation_starters))
-
-@bot.command(name='help_ultimate')
-async def help_ultimate_command(ctx):
-    """Show all features of the ultimate bot"""
     embed = discord.Embed(
-        title="🧠 Ultimate AI Bot Features",
-        description="I'm designed to be as human-like as possible with advanced memory and personality!",
+        title=f"What I know about {user_data.get('name', 'you')}",
         color=0x7289da
     )
     
     embed.add_field(
-        name="🤖 Personality System",
-        value="• Dynamic mood and energy levels\n• Proactive conversations\n• Context-aware responses\n• Daily check-ins with close friends",
+        name="📊 Basic Info",
+        value=f"Relationship: {user_data.get('relationship_level', 'new')}\n"
+              f"Interactions: {user_data.get('total_interactions', 0)}\n"
+              f"Since: {user_data.get('first_seen', 'unknown')[:10]}",
         inline=False
     )
     
-    embed.add_field(
-        name="🧠 Advanced Memory",
-        value="• Remembers everything about you\n• Knows where we're talking\n• Tracks relationship levels\n• Learns your preferences",
-        inline=False
+    if user_data.get('custom_memories'):
+        memories = user_data['custom_memories'][-3:]
+        memory_text = "\n".join([f"• {m['info']}" for m in memories])
+        embed.add_field(
+            name="💭 Recent Memories",
+            value=memory_text,
+            inline=False
+        )
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='server_data')
+async def server_data_command(ctx):
+    """Show server data"""
+    if not ctx.guild:
+        await ctx.send("this only works in servers")
+        return
+    
+    server_id = str(ctx.guild.id)
+    server_data = memory.get_server_memory(server_id)
+    
+    embed = discord.Embed(
+        title=f"Server: {server_data.get('name', ctx.guild.name)}",
+        color=0x7289da
     )
     
     embed.add_field(
-        name="💬 Smart Conversations",
-        value="• Starts conversations on its own\n• Adapts to channel context\n• Remembers conversation history\n• Shows realistic thinking time",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="🛠️ Useful Commands",
-        value="`!remember <info>` - Store something about you\n"
-              "`!forget <info>` - Remove specific memories\n"
-              "`!my_profile` - See what I know about you\n"
-              "`!bot_status` - Check my current state\n"
-              "`!remind <min> <text>` - Set reminders\n"
-              "`!talk_to_me` - Start a conversation",
+        name="📊 Server Info",
+        value=f"Culture: {server_data.get('culture', 'unknown')}\n"
+              f"My role: {server_data.get('my_role_here', 'observer')}\n"
+              f"Members: {server_data.get('member_count', 0)}",
         inline=False
     )
     
     await ctx.send(embed=embed)
 
-# Error handling
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("Looks like you missed something! Try `!help_ultimate` to see all commands.")
-    elif isinstance(error, commands.BadArgument):
-        await ctx.send("Hmm, that doesn't look right. Could you try again?")
-    elif isinstance(error, commands.CommandNotFound):
-        pass  # Ignore unknown commands
-    else:
-        await ctx.send(f"Something went wrong: {error}")
-
-# Run the bot
 if __name__ == "__main__":
-    bot.run(os.getenv('DISCORD_TOKEN'))
+    bot.run(TOKEN)
